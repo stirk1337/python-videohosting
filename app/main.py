@@ -1,7 +1,4 @@
-import os
-import sys
-import json
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.services import UserService, VideoService
