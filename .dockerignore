@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.pytest_cache
+.venv
+__pycache__
+*.py[cod]
+*.log
+.coverage
+.coverage.*
+htmlcov
+tests
+uploads
+dist
+build
+*.egg-info
+docker-compose*.yml
