@@ -83,3 +83,12 @@ static/uploads/
 # --- Документация сгенерированная ---
 docs/_build/
 site/
+
+# --- Terraform ---
+.terraform/
+**/.terraform/
+terraform.tfstate
+terraform.tfstate.*
+**/terraform.tfstate
+**/terraform.tfstate.*
+*.tfplan
