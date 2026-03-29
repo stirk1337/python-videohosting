@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from app.metrics import VIDEO_VIEWS_TOTAL, setup_metrics
 from app.services import UserService, VideoService
 
 app = FastAPI(title="Python Video Hosting", version="0.1.0")
 
 video_service = VideoService()
 user_service = UserService()
+
+setup_metrics(app)
 
 
 class RegisterRequest(BaseModel):
@@ -57,6 +60,7 @@ def get_video(video_id: str):
     video = video_service.watch_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+    VIDEO_VIEWS_TOTAL.inc()
     return {
         "id": video.id,
         "title": video.title,
@@ -70,3 +74,12 @@ def get_video(video_id: str):
 def search_videos(query: str):
     results = video_service.search_videos(query)
     return [{"id": v.id, "title": v.title, "views": v.views} for v in results]
+
+
+@app.post("/api/fail")
+def incident_simulate_failure():
+    """Simulate high 5xx rate for monitoring drills (Practice 206)."""
+    raise HTTPException(
+        status_code=500,
+        detail="Simulated failure for observability drill",
+    )

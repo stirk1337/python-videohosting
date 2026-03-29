@@ -1,5 +1,4 @@
 # python-videohosting
-
 ## Infrastructure as Code (Terraform)
 
 Репозиторий содержит Terraform-конфигурацию в `terraform/` для запуска стека:
