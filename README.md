@@ -1,4 +1,13 @@
 # python-videohosting
+
+## CI и безопасность
+
+В [`.github/workflows/ci.yml`](.github/workflows/ci.yml): линт, тесты, **Bandit** (HIGH+), **detect-secrets** (baseline), **Trivy** (FS + образ после сборки), **pip-audit** с порогом **CVSS ≥ 9.0** ([`scripts/sca_cvss_critical_gate.py`](scripts/sca_cvss_critical_gate.py)), **Gitleaks** ([`gitleaks.toml`](gitleaks.toml)), **SBOM** (Syft через sbom-action). JSON-отчёты пишутся в **`.ci-output/`** на раннере и прикладываются как артефакты workflow (каталог в `.gitignore`, в репозиторий не кладётся). Образ в GHCR пушится только после успешного сканирования и только с ветки `main`.
+
+Локально: `pip install -r requirements.txt`, `pre-commit install`, `pre-commit run --all-files`, `pytest`.
+
+---
+
 ## Infrastructure as Code (Terraform)
 
 Репозиторий содержит Terraform-конфигурацию в `terraform/` для запуска стека:
