@@ -84,6 +84,12 @@ static/uploads/
 docs/_build/
 site/
 
+# --- CI / security scratch ---
+bandit-report.json
+trivy-fs-report.txt
+trivy-image-report.txt
+.ci-output/
+
 # --- Terraform ---
 .terraform/
 **/.terraform/

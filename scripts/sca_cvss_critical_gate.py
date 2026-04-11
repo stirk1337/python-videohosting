@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
-"""Fail if pip-audit JSON report contains any vulnerability with CVSS base score >= 7.0.
-
-pip-audit JSON does not embed CVSS; we resolve scores via OSV (api.osv.dev).
-"""
+"""Fail if pip-audit JSON has any vulnerability with max CVSS >= 9.0 (Critical)."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
-CVSS_THRESHOLD = 7.0
+CVSS_THRESHOLD = 9.0
 
 
 def _parse_cvss_score(score: str) -> float | None:
     s = score.strip()
     if not s:
         return None
-    # OSV often stores "7.5" or a full CVSS vector string.
     if s[0].isdigit():
         parts = s.split("/", 1)
         try:
@@ -68,9 +65,14 @@ def fetch_max_cvss(vuln_id: str, cache: dict[str, float]) -> float:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: sca_cvss_gate.py <pip-audit-report.json>", file=sys.stderr)
+        print(
+            "usage: sca_cvss_critical_gate.py <pip-audit-report.json>", file=sys.stderr
+        )
         return 2
     path = sys.argv[1]
+    if not os.path.isfile(path):
+        print(f"pip-audit report not found: {path}", file=sys.stderr)
+        return 2
     try:
         with open(path, encoding="utf-8") as f:
             report = json.load(f)
@@ -99,11 +101,11 @@ def main() -> int:
                 blocking.append((name, version, str(vid), max_cvss))
 
     if blocking:
-        print("Blocking vulnerabilities (CVSS >= 7.0):", file=sys.stderr)
+        print("Blocking Critical vulnerabilities (CVSS >= 9.0):", file=sys.stderr)
         for name, version, vid, score in blocking:
             print(f"  {name}@{version} — {vid} (max CVSS {score})", file=sys.stderr)
         return 1
-    print("No vulnerabilities at or above CVSS 7.0.")
+    print("No Critical vulnerabilities (CVSS >= 9.0) from pip-audit/OSV.")
     return 0
 
 

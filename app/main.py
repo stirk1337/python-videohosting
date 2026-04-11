@@ -17,12 +17,6 @@ class RegisterRequest(BaseModel):
     email: str
 
 
-class VideoUploadRequest(BaseModel):
-    title: str
-    description: str = ""
-    owner_id: str
-
-
 @app.get("/health")
 def health_check():
     return {"status": "ok"}

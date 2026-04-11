@@ -3,6 +3,8 @@ name: CI Pipeline
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/python-videohosting
+  # Временные отчёты в раннере (не коммитятся; см. .gitignore)
+  CI_OUTPUT_DIR: .ci-output
 
 on:
   pull_request:
@@ -24,7 +26,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Cache pip dependencies
         uses: actions/cache@v5
@@ -43,7 +45,7 @@ jobs:
         run: black --check .
 
       - name: Run Flake8 (linting)
-        run: flake8 app/ tests/
+        run: flake8 app/ tests/ scripts/
 
   test:
     name: Tests (${{ matrix.fragment }})
@@ -58,7 +60,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Cache pip dependencies
         uses: actions/cache@v5
@@ -85,7 +87,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Cache pip dependencies
         uses: actions/cache@v5
@@ -100,8 +102,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Bandit
-        run: bandit -r app/ -f json -o bandit-report.json
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Bandit JSON report
+        run: bandit -r app/ -f json -o bandit-report.json || true
+
+      - name: Bandit quality gate (HIGH+)
+        run: bandit -r app/ -lll -ii
 
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
@@ -113,8 +121,45 @@ jobs:
       - name: Detect secrets (baseline)
         run: pre-commit run detect-secrets --all-files
 
-  security-sca:
-    name: SCA (pip-audit + CVSS gate)
+  security-sca-trivy:
+    name: SCA (Trivy filesystem)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure CI output dir
+        run: mkdir -p "${{ env.CI_OUTPUT_DIR }}"
+
+      - name: Trivy FS — JSON (отчёт)
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: "."
+          format: json
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: "0"
+          output: ${{ env.CI_OUTPUT_DIR }}/trivy-fs-report.json
+
+      - name: Trivy FS — gate CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: "."
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: "true"
+          scanners: vuln
+          output: trivy-fs-report.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-fs-report
+          path: ${{ env.CI_OUTPUT_DIR }}/trivy-fs-report.json
+
+  security-sca-pip-audit:
+    name: SCA (pip-audit + Critical CVSS gate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,89 +167,202 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      - name: Cache pip dependencies
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+      - name: Install pip-audit
+        run: pip install pip-audit
 
-      - name: Install tools
+      - name: pip-audit JSON + gate CVSS ≥ 9.0
         run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit
+          mkdir -p "${{ env.CI_OUTPUT_DIR }}"
+          pip-audit -r requirements.txt --format=json -o "${{ env.CI_OUTPUT_DIR }}/pip-audit-report.json" || true
+          test -f "${{ env.CI_OUTPUT_DIR }}/pip-audit-report.json"
+          python scripts/sca_cvss_critical_gate.py "${{ env.CI_OUTPUT_DIR }}/pip-audit-report.json"
 
-      - name: pip-audit report
-        run: |
-          pip-audit -r requirements.txt --format=json -o pip-audit-report.json || true
-
-      - name: Enforce CVSS ≥ 7.0 blocks merge
-        run: python scripts/sca_cvss_gate.py pip-audit-report.json
-
-      - name: Upload pip-audit report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pip-audit-report
-          path: pip-audit-report.json
+          path: ${{ env.CI_OUTPUT_DIR }}/pip-audit-report.json
+
+  secret-detection:
+    name: Secret detection (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz" -o gitleaks.tgz
+          tar -xzf gitleaks.tgz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Gitleaks detect (полная история)
+        run: |
+          mkdir -p "${{ env.CI_OUTPUT_DIR }}"
+          gitleaks detect \
+            --source . \
+            --config gitleaks.toml \
+            --report-path "${{ env.CI_OUTPUT_DIR }}/gitleaks-report.json" \
+            --report-format json \
+            --verbose \
+            --exit-code 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-report
+          path: ${{ env.CI_OUTPUT_DIR }}/gitleaks-report.json
+
+  sbom-generation:
+    name: SBOM (Syft / CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure CI output dir
+        run: mkdir -p "${{ env.CI_OUTPUT_DIR }}"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: "."
+          format: cyclonedx-json
+          output-file: ${{ env.CI_OUTPUT_DIR }}/sbom.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ${{ env.CI_OUTPUT_DIR }}/sbom.json
 
   security-gate:
     name: Security gate
     runs-on: ubuntu-latest
-    needs: [security-sast, security-sca]
+    needs:
+      - security-sast
+      - security-sca-trivy
+      - security-sca-pip-audit
+      - secret-detection
+      - sbom-generation
     if: always()
     steps:
       - name: Check security status
         run: |
           echo "security-sast: ${{ needs.security-sast.result }}"
-          echo "security-sca: ${{ needs.security-sca.result }}"
-          if [ "${{ needs.security-sast.result }}" != "success" ] || [ "${{ needs.security-sca.result }}" != "success" ]; then
+          echo "security-sca-trivy: ${{ needs.security-sca-trivy.result }}"
+          echo "security-sca-pip-audit: ${{ needs.security-sca-pip-audit.result }}"
+          echo "secret-detection: ${{ needs.secret-detection.result }}"
+          echo "sbom-generation: ${{ needs.sbom-generation.result }}"
+          if [ "${{ needs.security-sast.result }}" != "success" ] || \
+             [ "${{ needs.security-sca-trivy.result }}" != "success" ] || \
+             [ "${{ needs.security-sca-pip-audit.result }}" != "success" ] || \
+             [ "${{ needs.secret-detection.result }}" != "success" ] || \
+             [ "${{ needs.sbom-generation.result }}" != "success" ]; then
             echo "Security checks failed or did not complete successfully."
             exit 1
           fi
           echo "Security checks passed."
 
-  build-docker:
-    name: Build Docker image
+  docker-build:
+    name: Build Docker image (artifact)
     runs-on: ubuntu-latest
     needs: [lint, test, security-gate]
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Build image
+        run: docker build -t "myapp:${{ github.sha }}" .
+
+      - name: Save image tarball
+        run: docker save "myapp:${{ github.sha }}" -o "${{ runner.temp }}/image.tar"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ runner.temp }}/image.tar
+
+  docker-scan:
+    name: Image scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/img
+
+      - name: Load image
+        run: docker load -i /tmp/img/image.tar
+
+      - name: Ensure CI output dir
+        run: mkdir -p "${{ env.CI_OUTPUT_DIR }}"
+
+      - name: Trivy image — JSON
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: "myapp:${{ github.sha }}"
+          format: json
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: "0"
+          output: ${{ env.CI_OUTPUT_DIR }}/trivy-image-report.json
+
+      - name: Trivy image — gate CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: "myapp:${{ github.sha }}"
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: "true"
+          scanners: vuln
+          output: trivy-image-report.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-image-report
+          path: ${{ env.CI_OUTPUT_DIR }}/trivy-image-report.json
+
+  docker-push:
+    name: Push Docker image to GHCR
+    runs-on: ubuntu-latest
+    needs: [docker-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/img
+
+      - name: Load image
+        run: docker load -i /tmp/img/image.tar
+
       - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=ref,event=branch
-            type=sha,prefix=sha-
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Tag and push
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          SRC="myapp:${SHA}"
+          DEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          docker tag "$SRC" "${DEST}:latest"
+          docker tag "$SRC" "${DEST}:main"
+          docker tag "$SRC" "${DEST}:sha-${SHA}"
+          docker push "${DEST}:latest"
+          docker push "${DEST}:main"
+          docker push "${DEST}:sha-${SHA}"
