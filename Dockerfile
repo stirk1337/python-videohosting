@@ -22,6 +22,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_HOST=0.0.0.0 \
     APP_PORT=8000
 
+# Патчи базового образа (уменьшает HIGH/CRITICAL в Trivy по dpkg)
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 RUN groupadd --system app && \
